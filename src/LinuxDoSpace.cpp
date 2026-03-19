@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <sstream>
 #include <unordered_set>
 
@@ -85,6 +86,41 @@ std::optional<std::string> extractJsonFirstArrayString(const std::string &json, 
     return std::nullopt;
   }
   return json.substr(quote + 1, end - quote - 1);
+}
+
+std::vector<std::string> extractJsonArrayStrings(const std::string &json, const std::string &key) {
+  std::vector<std::string> out;
+  const std::string needle = "\"" + key + "\"";
+  std::size_t pos = json.find(needle);
+  if (pos == std::string::npos) {
+    return out;
+  }
+  pos = json.find('[', pos + needle.size());
+  if (pos == std::string::npos) {
+    return out;
+  }
+  pos++;
+  while (pos < json.size()) {
+    while (pos < json.size() && json[pos] != '"' && json[pos] != ']') {
+      pos++;
+    }
+    if (pos >= json.size() || json[pos] == ']') {
+      break;
+    }
+    std::size_t end = pos + 1;
+    while (end < json.size()) {
+      if (json[end] == '"' && json[end - 1] != '\\') {
+        break;
+      }
+      end++;
+    }
+    if (end >= json.size()) {
+      break;
+    }
+    out.push_back(lowerCopy(trimCopy(json.substr(pos + 1, end - pos - 1))));
+    pos = end + 1;
+  }
+  return out;
 }
 
 int b64Val(char c) {
@@ -193,6 +229,7 @@ struct Mailbox::Impl {
   bool queueActive{false};
   bool allowOverlap{false};
   bool isPattern{false};
+  std::function<void()> unregister;
   std::string suffix;
   std::string prefix;
   std::string pattern;
@@ -269,6 +306,9 @@ void Mailbox::close() {
   }
   impl_->closed = true;
   impl_->queue.clear();
+  if (impl_->unregister) {
+    impl_->unregister();
+  }
 }
 
 bool Mailbox::closed() const { return !impl_ || impl_->closed; }
@@ -310,6 +350,14 @@ Mailbox Client::bindExact(const std::string &prefix, const std::string &suffix, 
   box->allowOverlap = allowOverlap;
   box->suffix = lowerCopy(trimCopy(suffix));
   box->prefix = lowerCopy(trimCopy(prefix));
+  box->unregister = [owner = impl_, box]() {
+    owner->bindings.erase(
+        std::remove_if(
+            owner->bindings.begin(),
+            owner->bindings.end(),
+            [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
+        owner->bindings.end());
+  };
   if (box->suffix.empty() || box->prefix.empty()) {
     throw Error("prefix and suffix must not be empty");
   }
@@ -330,6 +378,14 @@ Mailbox Client::bindRegex(const std::string &pattern, const std::string &suffix,
   box->allowOverlap = allowOverlap;
   box->suffix = lowerCopy(trimCopy(suffix));
   box->pattern = pattern;
+  box->unregister = [owner = impl_, box]() {
+    owner->bindings.erase(
+        std::remove_if(
+            owner->bindings.begin(),
+            owner->bindings.end(),
+            [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
+        owner->bindings.end());
+  };
   if (box->suffix.empty() || box->pattern.empty()) {
     throw Error("pattern and suffix must not be empty");
   }
@@ -364,9 +420,9 @@ void Client::ingestNdjsonLine(const std::string &line) {
 
   auto senderOpt = extractJsonString(line, "original_envelope_from");
   auto recvOpt = extractJsonString(line, "received_at");
-  auto recOpt = extractJsonFirstArrayString(line, "original_recipients");
+  auto recipients = extractJsonArrayStrings(line, "original_recipients");
   auto rawB64Opt = extractJsonString(line, "raw_message_base64");
-  if (!senderOpt.has_value() || !recvOpt.has_value() || !recOpt.has_value() || !rawB64Opt.has_value()) {
+  if (!senderOpt.has_value() || !recvOpt.has_value() || recipients.empty() || !rawB64Opt.has_value()) {
     throw StreamError("mail event missing required fields");
   }
 
@@ -375,12 +431,12 @@ void Client::ingestNdjsonLine(const std::string &line) {
     throw StreamError("invalid base64 payload");
   }
   std::string raw(rawBytesOpt->begin(), rawBytesOpt->end());
-  std::string recipient = lowerCopy(trimCopy(*recOpt));
+  std::string primaryRecipient = recipients.front();
 
   MailMessage msg;
-  msg.address = recipient;
+  msg.address = primaryRecipient;
   msg.sender = *senderOpt;
-  msg.recipients = {recipient};
+  msg.recipients = recipients;
   msg.receivedAt = *recvOpt;
   msg.subject = extractHeader(raw, "Subject");
   msg.messageId = extractHeader(raw, "Message-ID");
@@ -400,10 +456,18 @@ void Client::ingestNdjsonLine(const std::string &line) {
 
   impl_->allQueue.push_back(msg);
 
-  auto matches = impl_->resolveMatches(recipient);
-  for (const auto &box : matches) {
-    if (!box->closed && box->queueActive) {
-      box->queue.push_back(msg);
+  std::unordered_set<std::string> seenRecipients;
+  for (const auto &recipient : recipients) {
+    if (!seenRecipients.insert(recipient).second) {
+      continue;
+    }
+    auto matches = impl_->resolveMatches(recipient);
+    for (const auto &box : matches) {
+      if (!box->closed && box->queueActive) {
+        MailMessage perRecipient = msg;
+        perRecipient.address = recipient;
+        box->queue.push_back(std::move(perRecipient));
+      }
     }
   }
 }
