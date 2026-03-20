@@ -240,9 +240,20 @@ struct Mailbox::Impl {
 struct Client::Impl : public std::enable_shared_from_this<Client::Impl> {
   std::string token;
   std::string baseUrl;
+  std::string ownerUsername;
   bool closed{false};
   std::deque<MailMessage> allQueue;
   std::vector<std::shared_ptr<Mailbox::Impl>> bindings;
+
+  std::string resolveSuffix(const Mailbox::Impl &box) const {
+    if (box.suffix != toString(Suffix::linuxdo_space)) {
+      return box.suffix;
+    }
+    if (ownerUsername.empty()) {
+      return "";
+    }
+    return ownerUsername + "." + box.suffix;
+  }
 
   bool mailboxMatches(const Mailbox::Impl &box, const std::string &address) const {
     if (box.closed) {
@@ -252,7 +263,7 @@ struct Client::Impl : public std::enable_shared_from_this<Client::Impl> {
     if (parts.first.empty() || parts.second.empty()) {
       return false;
     }
-    if (parts.second != box.suffix) {
+    if (parts.second != resolveSuffix(box)) {
       return false;
     }
     if (!box.isPattern) {
@@ -425,7 +436,18 @@ void Client::ingestNdjsonLine(const std::string &line) {
     throw StreamError("invalid JSON type field");
   }
   const std::string type = *typeOpt;
-  if (type == "ready" || type == "heartbeat") {
+  if (type == "ready") {
+    auto ownerUsernameOpt = extractJsonString(line, "owner_username");
+    if (!ownerUsernameOpt.has_value()) {
+      throw StreamError("ready event missing owner_username");
+    }
+    impl_->ownerUsername = lowerCopy(trimCopy(*ownerUsernameOpt));
+    if (impl_->ownerUsername.empty()) {
+      throw StreamError("ready event missing owner_username");
+    }
+    return;
+  }
+  if (type == "heartbeat") {
     return;
   }
   if (type != "mail") {

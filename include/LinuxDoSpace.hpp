@@ -17,6 +17,9 @@ enum class Suffix {
 };
 
 inline std::string toString(Suffix suffix) {
+  // linuxdo_space is semantic rather than literal: bindings resolve it to
+  // "<owner_username>.linuxdo.space" after a ready event provides
+  // owner_username.
   if (suffix == Suffix::linuxdo_space) {
     return "linuxdo.space";
   }

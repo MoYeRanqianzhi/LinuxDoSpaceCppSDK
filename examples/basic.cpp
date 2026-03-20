@@ -14,8 +14,10 @@ int main() {
   (void)alice.listenNext(tmp);
 
   client.ingestNdjsonLine(
+      "{\"type\":\"ready\",\"token_public_id\":\"tok_123\",\"owner_username\":\"testuser\"}");
+  client.ingestNdjsonLine(
       "{\"type\":\"mail\",\"original_envelope_from\":\"bounce@example.com\","
-      "\"original_recipients\":[\"alice@linuxdo.space\"],"
+      "\"original_recipients\":[\"alice@testuser.linuxdo.space\"],"
       "\"received_at\":\"2026-03-20T10:11:12Z\","
       "\"raw_message_base64\":\"RnJvbTogU2VuZGVyIDxzZW5kZXJAZXhhbXBsZS5jb20+DQpUbzogQWxpY2UgPGFsaWNlQGxpbnV4ZG8uc3BhY2U+DQpTdWJqZWN0OiBDUFAgVGVzdA0KDQpIZWxsbyBmcm9tIENQUD8=\"}");
 
@@ -26,7 +28,7 @@ int main() {
     std::cout << "catch-all address: " << tmp.address << "\n";
   }
 
-  auto matches = client.route("alice@linuxdo.space");
+  auto matches = client.route("alice@testuser.linuxdo.space");
   std::cout << "route matches: " << matches.size() << "\n";
   return 0;
 }

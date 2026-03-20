@@ -18,6 +18,11 @@ Current core coverage:
   - regex + suffix
 - one ordered match chain per suffix
 - `allowOverlap` behavior
+
+Important:
+
+- `Suffix::linuxdo_space` is semantic, not literal
+- the SDK resolves it to `<owner_username>.linuxdo.space` after `ready.owner_username`
 - local route inspection (`route`)
 - mailbox close and queue activation semantics
 
