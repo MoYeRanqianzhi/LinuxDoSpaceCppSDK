@@ -6,7 +6,7 @@
 
 This SDK follows:
 
-- `sdk/spec/MAIL_STREAM_PROTOCOL.md`
+- `https://github.com/MoYeRanqianzhi/LinuxDoSpace/blob/main/sdk/spec/MAIL_STREAM_PROTOCOL.md`
 
 Current core coverage:
 
@@ -38,7 +38,6 @@ Requirements:
 Build steps:
 
 ```bash
-cd sdk/cpp
 cmake -S . -B build
 cmake --build build
 ```

@@ -304,10 +304,14 @@ void Mailbox::close() {
   if (!impl_) {
     return;
   }
+  if (impl_->closed) {
+    return;
+  }
   impl_->closed = true;
   impl_->queue.clear();
   if (impl_->unregister) {
     impl_->unregister();
+    impl_->unregister = {};
   }
 }
 
@@ -350,13 +354,18 @@ Mailbox Client::bindExact(const std::string &prefix, const std::string &suffix, 
   box->allowOverlap = allowOverlap;
   box->suffix = lowerCopy(trimCopy(suffix));
   box->prefix = lowerCopy(trimCopy(prefix));
-  box->unregister = [owner = impl_, box]() {
-    owner->bindings.erase(
+  std::weak_ptr<Impl> owner = impl_;
+  box->unregister = [owner, box]() {
+    auto sharedOwner = owner.lock();
+    if (!sharedOwner) {
+      return;
+    }
+    sharedOwner->bindings.erase(
         std::remove_if(
-            owner->bindings.begin(),
-            owner->bindings.end(),
+            sharedOwner->bindings.begin(),
+            sharedOwner->bindings.end(),
             [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
-        owner->bindings.end());
+        sharedOwner->bindings.end());
   };
   if (box->suffix.empty() || box->prefix.empty()) {
     throw Error("prefix and suffix must not be empty");
@@ -378,13 +387,18 @@ Mailbox Client::bindRegex(const std::string &pattern, const std::string &suffix,
   box->allowOverlap = allowOverlap;
   box->suffix = lowerCopy(trimCopy(suffix));
   box->pattern = pattern;
-  box->unregister = [owner = impl_, box]() {
-    owner->bindings.erase(
+  std::weak_ptr<Impl> owner = impl_;
+  box->unregister = [owner, box]() {
+    auto sharedOwner = owner.lock();
+    if (!sharedOwner) {
+      return;
+    }
+    sharedOwner->bindings.erase(
         std::remove_if(
-            owner->bindings.begin(),
-            owner->bindings.end(),
+            sharedOwner->bindings.begin(),
+            sharedOwner->bindings.end(),
             [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
-        owner->bindings.end());
+        sharedOwner->bindings.end());
   };
   if (box->suffix.empty() || box->pattern.empty()) {
     throw Error("pattern and suffix must not be empty");
@@ -482,6 +496,9 @@ bool Client::listenNext(MailMessage &out) {
 }
 
 std::vector<Mailbox> Client::route(const std::string &address) const {
+  if (impl_->closed) {
+    throw Error("client is closed");
+  }
   std::vector<Mailbox> out;
   auto matches = impl_->resolveMatches(address);
   out.reserve(matches.size());
@@ -500,7 +517,9 @@ void Client::close() {
   for (const auto &box : impl_->bindings) {
     box->closed = true;
     box->queue.clear();
+    box->unregister = {};
   }
+  impl_->bindings.clear();
 }
 
 bool Client::closed() const { return impl_->closed; }
