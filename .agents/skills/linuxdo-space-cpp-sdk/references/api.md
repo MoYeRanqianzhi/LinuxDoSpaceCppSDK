@@ -36,4 +36,3 @@
 - Mailbox delivery rewrites `address` to the matched recipient projection.
 - Exact and regex bindings share one ordered chain per suffix.
 - `Mailbox::~Mailbox()` does not imply immediate unbind.
-

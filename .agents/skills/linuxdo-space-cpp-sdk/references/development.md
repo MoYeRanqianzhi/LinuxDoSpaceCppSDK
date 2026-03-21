@@ -37,4 +37,3 @@ cmake --build build
 - `../../../examples/basic.cpp`
 - `../../../.github/workflows/ci.yml`
 - `../../../.github/workflows/release.yml`
-

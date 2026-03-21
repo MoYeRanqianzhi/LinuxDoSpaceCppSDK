@@ -31,4 +31,3 @@ Read [references/development.md](references/development.md) only when editing `s
 - Do not imply this SDK opens its own upstream network connection.
 - Do not imply scope exit auto-unbinds mailbox bindings.
 - Do not describe current release output as a package-manager install.
-

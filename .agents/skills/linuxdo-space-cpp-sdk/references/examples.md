@@ -25,4 +25,3 @@ auto matches = client.route(msg.address);
 ## Important note
 
 - Do not rely on `Mailbox` destruction for immediate unbind; call `close()`.
-

@@ -47,4 +47,3 @@ client.close();
 - Mailbox queues do not backfill before first mailbox listen.
 - `Mailbox` does not auto-close on destruction.
 - `Client::route(...)` is local matching only.
-
