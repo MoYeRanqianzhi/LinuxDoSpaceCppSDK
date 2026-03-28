@@ -22,7 +22,12 @@ Current core coverage:
 Important:
 
 - `Suffix::linuxdo_space` is semantic, not literal
-- the SDK resolves it to `<owner_username>.linuxdo.space` after `ready.owner_username`
+- the canonical default binding resolves to
+  `<owner_username>-mail.linuxdo.space`
+- `semanticSuffix(Suffix::linuxdo_space).withSuffix("foo")` resolves to
+  `<owner_username>-mailfoo.linuxdo.space`
+- the legacy default alias `<owner_username>.linuxdo.space` still matches the
+  default semantic binding automatically
 - local route inspection (`route`)
 - mailbox close and queue activation semantics
 

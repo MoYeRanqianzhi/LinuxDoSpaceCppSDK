@@ -25,6 +25,40 @@ std::string lowerCopy(std::string value) {
   return value;
 }
 
+std::string normalizeMailSuffixFragment(const std::string &raw) {
+  std::string normalized;
+  normalized.reserve(raw.size());
+  bool lastWasDash = false;
+  for (unsigned char ch : raw) {
+    char lowered = static_cast<char>(std::tolower(ch));
+    if (std::isalnum(ch)) {
+      normalized.push_back(lowered);
+      lastWasDash = false;
+      continue;
+    }
+    if (!lastWasDash) {
+      normalized.push_back('-');
+      lastWasDash = true;
+    }
+  }
+  while (!normalized.empty() && normalized.front() == '-') {
+    normalized.erase(normalized.begin());
+  }
+  while (!normalized.empty() && normalized.back() == '-') {
+    normalized.pop_back();
+  }
+  if (!raw.empty() && normalized.empty()) {
+    throw Error("mail suffix fragment does not contain any valid dns characters");
+  }
+  if (normalized.find('.') != std::string::npos) {
+    throw Error("mail suffix fragment must stay inside one dns label");
+  }
+  if (normalized.size() > 48) {
+    throw Error("mail suffix fragment must be 48 characters or fewer");
+  }
+  return normalized;
+}
+
 std::optional<std::string> extractJsonString(const std::string &json, const std::string &key) {
   const std::string needle = "\"" + key + "\"";
   std::size_t pos = json.find(needle);
@@ -229,8 +263,11 @@ struct Mailbox::Impl {
   bool queueActive{false};
   bool allowOverlap{false};
   bool isPattern{false};
+  bool semanticLinuxdoSpace{false};
   std::function<void()> unregister;
   std::string suffix;
+  std::string bindingSuffix;
+  std::string mailSuffixFragment;
   std::string prefix;
   std::string pattern;
   std::regex regex;
@@ -245,14 +282,40 @@ struct Client::Impl : public std::enable_shared_from_this<Client::Impl> {
   std::deque<MailMessage> allQueue;
   std::vector<std::shared_ptr<Mailbox::Impl>> bindings;
 
-  std::string resolveSuffix(const Mailbox::Impl &box) const {
-    if (box.suffix != toString(Suffix::linuxdo_space)) {
-      return box.suffix;
+  std::string resolveCanonicalSuffix(const Mailbox::Impl &box) const {
+    if (!box.semanticLinuxdoSpace) {
+      return box.bindingSuffix;
     }
     if (ownerUsername.empty()) {
-      return "";
+      return box.bindingSuffix;
     }
-    return ownerUsername + "." + box.suffix;
+    if (box.mailSuffixFragment.empty()) {
+      return ownerUsername + "-mail." + toString(Suffix::linuxdo_space);
+    }
+    return ownerUsername + "-mail" + box.mailSuffixFragment + "." + toString(Suffix::linuxdo_space);
+  }
+
+  void refreshVisibleSuffix(const std::shared_ptr<Mailbox::Impl> &box) const {
+    if (!box) {
+      return;
+    }
+    box->suffix = resolveCanonicalSuffix(*box);
+  }
+
+  bool matchesSemanticSuffix(const Mailbox::Impl &box,
+                             const std::string &suffix) const {
+    if (!box.semanticLinuxdoSpace) {
+      return suffix == box.bindingSuffix;
+    }
+    if (ownerUsername.empty()) {
+      return false;
+    }
+    if (box.mailSuffixFragment.empty()) {
+      return suffix == ownerUsername + "." + toString(Suffix::linuxdo_space) ||
+             suffix == ownerUsername + "-mail." + toString(Suffix::linuxdo_space);
+    }
+    return suffix ==
+           ownerUsername + "-mail" + box.mailSuffixFragment + "." + toString(Suffix::linuxdo_space);
   }
 
   bool mailboxMatches(const Mailbox::Impl &box, const std::string &address) const {
@@ -263,7 +326,7 @@ struct Client::Impl : public std::enable_shared_from_this<Client::Impl> {
     if (parts.first.empty() || parts.second.empty()) {
       return false;
     }
-    if (parts.second != resolveSuffix(box)) {
+    if (!matchesSemanticSuffix(box, parts.second)) {
       return false;
     }
     if (!box.isPattern) {
@@ -286,6 +349,21 @@ struct Client::Impl : public std::enable_shared_from_this<Client::Impl> {
     return out;
   }
 };
+
+SemanticSuffix::SemanticSuffix(Suffix base) : base_(base) {}
+
+SemanticSuffix::SemanticSuffix(Suffix base, std::string mailSuffixFragment)
+    : base_(base), mailSuffixFragment_(std::move(mailSuffixFragment)) {}
+
+SemanticSuffix SemanticSuffix::withSuffix(const std::string &fragment) const {
+  return SemanticSuffix(base_, normalizeMailSuffixFragment(fragment));
+}
+
+Suffix SemanticSuffix::base() const { return base_; }
+
+const std::string &SemanticSuffix::mailSuffixFragment() const {
+  return mailSuffixFragment_;
+}
 
 Mailbox::Mailbox(std::shared_ptr<Mailbox::Impl> impl) : impl_(std::move(impl)) {}
 
@@ -363,7 +441,10 @@ Mailbox Client::bindExact(const std::string &prefix, const std::string &suffix, 
   auto box = std::make_shared<Mailbox::Impl>();
   box->isPattern = false;
   box->allowOverlap = allowOverlap;
-  box->suffix = lowerCopy(trimCopy(suffix));
+  box->bindingSuffix = lowerCopy(trimCopy(suffix));
+  box->semanticLinuxdoSpace = box->bindingSuffix == toString(Suffix::linuxdo_space);
+  box->mailSuffixFragment.clear();
+  box->suffix = impl_->resolveCanonicalSuffix(*box);
   box->prefix = lowerCopy(trimCopy(prefix));
   std::weak_ptr<Impl> owner = impl_;
   box->unregister = [owner, box]() {
@@ -378,7 +459,7 @@ Mailbox Client::bindExact(const std::string &prefix, const std::string &suffix, 
             [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
         sharedOwner->bindings.end());
   };
-  if (box->suffix.empty() || box->prefix.empty()) {
+  if (box->bindingSuffix.empty() || box->prefix.empty()) {
     throw Error("prefix and suffix must not be empty");
   }
   impl_->bindings.push_back(box);
@@ -386,7 +467,39 @@ Mailbox Client::bindExact(const std::string &prefix, const std::string &suffix, 
 }
 
 Mailbox Client::bindExact(const std::string &prefix, Suffix suffix, bool allowOverlap) {
-  return bindExact(prefix, toString(suffix), allowOverlap);
+  return bindExact(prefix, semanticSuffix(suffix), allowOverlap);
+}
+
+Mailbox Client::bindExact(const std::string &prefix, const SemanticSuffix &suffix, bool allowOverlap) {
+  if (impl_->closed) {
+    throw Error("client is closed");
+  }
+  auto box = std::make_shared<Mailbox::Impl>();
+  box->isPattern = false;
+  box->allowOverlap = allowOverlap;
+  box->bindingSuffix = toString(suffix.base());
+  box->semanticLinuxdoSpace = suffix.base() == Suffix::linuxdo_space;
+  box->mailSuffixFragment = suffix.mailSuffixFragment();
+  box->suffix = impl_->resolveCanonicalSuffix(*box);
+  box->prefix = lowerCopy(trimCopy(prefix));
+  std::weak_ptr<Impl> owner = impl_;
+  box->unregister = [owner, box]() {
+    auto sharedOwner = owner.lock();
+    if (!sharedOwner) {
+      return;
+    }
+    sharedOwner->bindings.erase(
+        std::remove_if(
+            sharedOwner->bindings.begin(),
+            sharedOwner->bindings.end(),
+            [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
+        sharedOwner->bindings.end());
+  };
+  if (box->bindingSuffix.empty() || box->prefix.empty()) {
+    throw Error("prefix and suffix must not be empty");
+  }
+  impl_->bindings.push_back(box);
+  return Mailbox(box);
 }
 
 Mailbox Client::bindRegex(const std::string &pattern, const std::string &suffix, bool allowOverlap) {
@@ -396,7 +509,10 @@ Mailbox Client::bindRegex(const std::string &pattern, const std::string &suffix,
   auto box = std::make_shared<Mailbox::Impl>();
   box->isPattern = true;
   box->allowOverlap = allowOverlap;
-  box->suffix = lowerCopy(trimCopy(suffix));
+  box->bindingSuffix = lowerCopy(trimCopy(suffix));
+  box->semanticLinuxdoSpace = box->bindingSuffix == toString(Suffix::linuxdo_space);
+  box->mailSuffixFragment.clear();
+  box->suffix = impl_->resolveCanonicalSuffix(*box);
   box->pattern = pattern;
   std::weak_ptr<Impl> owner = impl_;
   box->unregister = [owner, box]() {
@@ -411,7 +527,7 @@ Mailbox Client::bindRegex(const std::string &pattern, const std::string &suffix,
             [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
         sharedOwner->bindings.end());
   };
-  if (box->suffix.empty() || box->pattern.empty()) {
+  if (box->bindingSuffix.empty() || box->pattern.empty()) {
     throw Error("pattern and suffix must not be empty");
   }
   try {
@@ -424,7 +540,44 @@ Mailbox Client::bindRegex(const std::string &pattern, const std::string &suffix,
 }
 
 Mailbox Client::bindRegex(const std::string &pattern, Suffix suffix, bool allowOverlap) {
-  return bindRegex(pattern, toString(suffix), allowOverlap);
+  return bindRegex(pattern, semanticSuffix(suffix), allowOverlap);
+}
+
+Mailbox Client::bindRegex(const std::string &pattern, const SemanticSuffix &suffix, bool allowOverlap) {
+  if (impl_->closed) {
+    throw Error("client is closed");
+  }
+  auto box = std::make_shared<Mailbox::Impl>();
+  box->isPattern = true;
+  box->allowOverlap = allowOverlap;
+  box->bindingSuffix = toString(suffix.base());
+  box->semanticLinuxdoSpace = suffix.base() == Suffix::linuxdo_space;
+  box->mailSuffixFragment = suffix.mailSuffixFragment();
+  box->suffix = impl_->resolveCanonicalSuffix(*box);
+  box->pattern = pattern;
+  std::weak_ptr<Impl> owner = impl_;
+  box->unregister = [owner, box]() {
+    auto sharedOwner = owner.lock();
+    if (!sharedOwner) {
+      return;
+    }
+    sharedOwner->bindings.erase(
+        std::remove_if(
+            sharedOwner->bindings.begin(),
+            sharedOwner->bindings.end(),
+            [box](const std::shared_ptr<Mailbox::Impl> &candidate) { return candidate == box; }),
+        sharedOwner->bindings.end());
+  };
+  if (box->bindingSuffix.empty() || box->pattern.empty()) {
+    throw Error("pattern and suffix must not be empty");
+  }
+  try {
+    box->regex = std::regex(box->pattern, std::regex::ECMAScript);
+  } catch (const std::regex_error &e) {
+    throw Error(std::string("invalid regex: ") + e.what());
+  }
+  impl_->bindings.push_back(box);
+  return Mailbox(box);
 }
 
 void Client::ingestNdjsonLine(const std::string &line) {
@@ -444,6 +597,9 @@ void Client::ingestNdjsonLine(const std::string &line) {
     impl_->ownerUsername = lowerCopy(trimCopy(*ownerUsernameOpt));
     if (impl_->ownerUsername.empty()) {
       throw StreamError("ready event missing owner_username");
+    }
+    for (const auto &binding : impl_->bindings) {
+      impl_->refreshVisibleSuffix(binding);
     }
     return;
   }

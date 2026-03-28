@@ -17,13 +17,36 @@ enum class Suffix {
 };
 
 inline std::string toString(Suffix suffix) {
-  // linuxdo_space is semantic rather than literal: bindings resolve it to
-  // "<owner_username>.linuxdo.space" after a ready event provides
-  // owner_username.
+  // linuxdo_space is semantic rather than literal.
+  //
+  // Current canonical behavior:
+  // - Suffix::linuxdo_space => `<owner_username>-mail.linuxdo.space`
+  // - legacy `<owner_username>.linuxdo.space` events are still matched for
+  //   backward-compatible default routing
+  // - dynamic semantic variants are created through SemanticSuffix::withSuffix
   if (suffix == Suffix::linuxdo_space) {
     return "linuxdo.space";
   }
   return "";
+}
+
+class SemanticSuffix {
+public:
+  explicit SemanticSuffix(Suffix base = Suffix::linuxdo_space);
+
+  SemanticSuffix withSuffix(const std::string &fragment) const;
+  Suffix base() const;
+  const std::string &mailSuffixFragment() const;
+
+private:
+  explicit SemanticSuffix(Suffix base, std::string mailSuffixFragment);
+
+  Suffix base_;
+  std::string mailSuffixFragment_;
+};
+
+inline SemanticSuffix semanticSuffix(Suffix suffix) {
+  return SemanticSuffix(suffix);
 }
 
 struct MailMessage {
@@ -102,8 +125,10 @@ public:
 
   Mailbox bindExact(const std::string &prefix, const std::string &suffix, bool allowOverlap = false);
   Mailbox bindExact(const std::string &prefix, Suffix suffix, bool allowOverlap = false);
+  Mailbox bindExact(const std::string &prefix, const SemanticSuffix &suffix, bool allowOverlap = false);
   Mailbox bindRegex(const std::string &pattern, const std::string &suffix, bool allowOverlap = false);
   Mailbox bindRegex(const std::string &pattern, Suffix suffix, bool allowOverlap = false);
+  Mailbox bindRegex(const std::string &pattern, const SemanticSuffix &suffix, bool allowOverlap = false);
 
   void ingestNdjsonLine(const std::string &line);
   bool listenNext(MailMessage &out);
